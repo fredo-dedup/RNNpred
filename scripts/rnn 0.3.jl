@@ -16,14 +16,14 @@ using Distances
 
 using RecurrentNN
 import Bokeh
+using DataFrames
+using DataFramesMeta
 
 ##########################################################################
 #    Chargement
 ##########################################################################
-    using DataFrames
-    using DataFramesMeta
 
-    datapath = "P:/Documents/Julia/prediction/data"
+    datapath = "P:/Documents/Julia/RNNpred/data"
 
     #####  lecture données  ###############
 
@@ -150,14 +150,13 @@ import Bokeh
         # 0.038
         sol = deepcopy(model)
 
-    ### RNN, layer 20
-        model = RNN(7, [20], 1)
+    ### RNN, layer 30
+        model = RNN(7, [30], 1)
         ldata1 = shuffle(ldata0)
         iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e0, regc=1e-10, learning_rate=1e-3)
         iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=2e-4)
         iter(model, ldata1, nbepoch=1000, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
-        # 0.037 - 0.015 (prof=5)
-        # 0.012, pas terrible
+        # 0.008, pas terrible
         sol1 = deepcopy(model)
 
     ### RNN, layer 20, split calib / valid set
@@ -173,10 +172,14 @@ import Bokeh
         sol = deepcopy(model)
 
     ### RNN, layer 10+10
-        model = RNN(8, [10,10], 1)
-        iter(model, ldata, nbepoch=500, freq=1000, clipval=1e1, regc=1e-5, learning_rate=1e-3)
-        # 0.065
-        sol = deepcopy(model)
+        model = RNN(7, [10,10], 1)
+        ldata1 = shuffle(ldata0)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e0, regc=1e-10, learning_rate=1e-3)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-4)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=1e-4)
+        iter(model, ldata1, nbepoch=1000, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
+        # 0.014
+        sol1 = deepcopy(model)
 
     ### GRU, layer 10
         model = GRU(5, [10], 1)
@@ -233,12 +236,12 @@ import Bokeh
         dat
     end
 
-    res = simul(strat1, sol1, ldata0) # +80%
+    res = simul(strat1, sol1, ldata0, costrel=0., costabs=0.) # +61% / +95% (10+10)
     Bokeh.plot(Float64[1:length(ldata0);], res[:,[1, 5, 7]])
     Bokeh.showplot()
 
     # cout réels coinbase
-    res = simul(strat1, sol1, ldata0, costrel=0.01, costabs=0.) # +69%
+    res = simul(strat1, sol1, ldata0, costrel=0.01, costabs=0.) # +29% / 61% (10+10)
     Bokeh.plot(Float64[1:length(ldata0);], res[:,[1, 5, 7]])
     Bokeh.showplot() 
 
@@ -296,7 +299,7 @@ import Bokeh
 ##########################################################################
 #   Out of sample
 ##########################################################################
-    datapath = "P:/Documents/Julia/prediction/data/testing"
+    datapath = "P:/Documents/Julia/RNNpred/data/testing"
 
     #####  lecture données  ###############
         df0 = readtable(joinpath(datapath, "BAVERAGE-EUR.csv"), separator=',')
@@ -353,4 +356,4 @@ import Bokeh
             println( sign(pred-current)==sign(vrai-current) ? "ok" : "erreur")
         end
 
-    df0[20:end,:]
+    df0[20:end,:] 
