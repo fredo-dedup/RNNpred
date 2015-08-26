@@ -6,73 +6,91 @@
 #    2015-07-23        : creation
 #    2015-08-25 (v0.2) : nettoyage, retrait var "volume BTC", ajout test out of sample
 #    2015-08-25 (v0.3) : avec scaling plus large pour accommoder evols futures
+#    2015-08-26 (v0.4) : estim de la variation relative
 #
 ##########################################################################
 
-version = v"0.3"
+version = v"0.4"
 
 using StatsBase
 using Distances
+using Distributions
 
 using RecurrentNN
 import Bokeh
 using DataFrames
 using DataFramesMeta
 
+datapath = "P:/Documents/Julia/RNNpred/data"
+
 ##########################################################################
 #    Chargement
 ##########################################################################
 
-    datapath = "P:/Documents/Julia/RNNpred/data"
-
-    #####  lecture données  ###############
-
-        df0 = readtable(joinpath(datapath, "BAVERAGE-BITCOIN_CENTRALEUR.csv"), separator=',')
-        # df0 = @transform(df0, Date = Date(:Date)) ; nothing
-        # df0 = df0[[:Date, :Ask, :Bid, :Last, :Volume_BTC_]]
+    function loadcsv(ddir)
+        df0 = readtable(joinpath(ddir, "BAVERAGE-EUR.csv"), separator=',')
         df0 = df0[[:Date, :Ask, :Bid, :Last]]
-        # lasts = array(df0[:Last])
-        # μs = lasts[2:end] ./ lasts[1:end-1]
-        # fit_mle(LogNormal, μs)
-        # fit_mle(Normal, μs - 1.)
-        # fit_mle(Normal, μs )
 
-        println(nrow(df0))
+        print(nrow(df0))
         for (fn, cn) in [("CURRFX-USDCNY.csv",  :Rate), 
                    ("CURRFX-EURUSD.csv",  :Rate),
                    ("BCHAIN-NTRAN.csv",  :Value),
                    ("BCHAIN-TVTVR.csv", :Value)]
-            # fn = "BCHAIN-NTRAN.csv"
-            df = readtable(joinpath(datapath, fn), separator=',')
+            df = readtable(joinpath(ddir, fn), separator=',')
             nfx = symbol(fn[1:end-4])
-            # df = @transform(df, Date = Date(:Date))
             df[nfx] = df[cn]
             df0 = join(df0, df[[:Date, nfx]], on=:Date, kind=:inner)
-            println(nrow(df0))
+            print(", ", nrow(df0))
         end
-
+        println()
         sort!(df0, cols=:Date)
-        head(df0)
+        df0
+    end
 
-
-    #### Génération des séries historiques de longueur 'Span'
-        Span = 5
-
-        ldata0 = Any[]
-        avars = convert(Array{Float64}, df0[:,2:end])'
-        vscale = 10 .^ ceil(maximum(log(10, avars),2)) # puissance de 10 supérieure
-        avars = avars ./ vscale
-        ares  = convert(Vector{Float64},df0[:Last])
-        rscale = 10 ^ ceil(maximum(log(10, ares)))
-        ares  = ares ./ rscale
-        for i in 1:nrow(df0)-Span  # i = 1
-            vars = avars[:,i:i+Span-1]
-            res  = ares[i+Span]
-            push!(ldata0, (vars, res))
+    function mkdata(df, span=5, scales=nothing)  # df = df0
+        ldata = Any[]
+        avars = convert(Array{Float64}, df[:,2:end])'
+        ares  = convert(Vector{Float64},df[:Last])
+        ares  = convert(Array{Float64}, diff(ares) .>= 0.5)
+        if scales==nothing
+            vscale = (2 .^ floor(minimum(log(2, avars),2)),
+                      2 .^ ceil(maximum(log(2, avars),2)) )
+            # rscale = 10 ^ ceil(maximum(log(10, abs(ares))))
+            rscale = 1.
+        else
+            (vscale, rscale) = scales
+        end
+        avars = (avars .- vscale[1]) ./ (vscale[2] - vscale[1])
+        # [ minimum(avars,2) maximum(avars,2)]
+        # ares  = ares / rscale / 2 + 0.5
+        for i in 1:nrow(df)-span  # i = 1
+            vars = avars[:,i:i+span-1]
+            # res  = ares[i+span] / ares[i+span-1] / 2
+            # res  = convert(Float64, ares[i+span] > ares[i+span-1])
+            res  = ares[i+span-1]
+            push!(ldata, (vars, res))
         end
 
-        std(diff(ares)) # baseline variations = 0.0108
+        ldata, (vscale, rscale)
+    end
 
+    #####  lecture données  ###############
+
+        df0    = loadcsv(datapath);
+        ldata0, scales = mkdata(df0, 2);
+        ldata1 = shuffle(ldata0)  # pour le training
+
+        # out of sample
+        df1    = loadcsv(joinpath(datapath, "testing"));
+        ldatax, _ = mkdata(df1, 2, scales);
+
+
+        ress = [ x[2] for x in ldata0]
+        mean( ress .< 0.5 )  # à la baisse dans 55% des cas
+        mean([ x[2] for x in ldata0])  # 0.5
+        extrema([ x[2] for x in ldata0])  # 0.397-0.609
+
+ 
         Bokeh.hold(false)
         Bokeh.plot([1.:316;], ((avars .- Float64[ x[1] for x in vscale]) ./ Float64[ x[2]-x[1] for x in vscale])')
         Bokeh.showplot()
@@ -85,6 +103,22 @@ using DataFramesMeta
 ##########################################################################
 #    Fit RNN
 ##########################################################################
+
+    #### fonction de scoring des modèles
+        function score(model, ldata)
+            nb, success = 0, 0
+            for (i, (vars, res)) in enumerate(ldata) # i, (vars, res) = 1, ldatax[8]
+                pred = rnn(model, vars, res)[1] 
+                vrai =                     res 
+
+                success += ! ( (pred < 0.5) $ (vrai < 0.5) )
+                nb += 1
+            end
+
+            ratio = success/nb
+            pvalue = ccdf(Binomial(nb,0.5), success)
+            print("success ratio $(round(ratio*100))%, p-value $(round(pvalue,3))")
+        end
 
     #### fonction d'application du RNN
         function rnn(model, vars, res) # vars, res = ldata[10]
@@ -137,27 +171,86 @@ using DataFramesMeta
 
                 if (freq > 0) && (k % freq == 0)
                     stderr = sqrt(err / freq)
-                    println("std err = $(round(stderr, 3))")
+                    println("std err = $(round(stderr, 4))")
                     err = 0.
                 end
             end
         end
 
     ### RNN, layer 10
-        model = RNN(8, [10], 1)
-        iter(model, ldata, nbepoch=100, freq=1000, clipval=1e1, regc=1e-10, learning_rate=1e-3)
-        iter(model, ldata, nbepoch=500, freq=1000, clipval=1e1, regc=1e-10, learning_rate=1e-4)
-        # 0.038
+        model = RNN(7, [10], 1)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e5, regc=0., learning_rate=3e-3)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e5, regc=0., learning_rate=1e-3)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e5, regc=0., learning_rate=3e-4)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e1, regc=0., learning_rate=1e-5)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e1, regc=0., learning_rate=1e-6)
+        # 0.4871
+        score(model, ldata1) # success ratio 60.0%, p-value 0.0
+        score(model, ldatax) # success ratio 69.0%, p-value 0.008
         sol = deepcopy(model)
+
+        [rnn(model, dat...) for dat in ldata0]
+
+        ress = Float64[rnn(model, dat...)[j] for dat in ldata0, j in 1:3]
+        mean(ress[:,1] .>= 0.5) # 13% !!!
+        mean(ress[:,2] .>= 0.5) # 42%
+
+        Bokeh.plot([1.:314;], ress[:,1:2], ".r-b-")
+        Bokeh.showplot()
+
+        # moins bon que version non discretisée (v0.5)
+        # score(model, ldata1) # success ratio 65.0%, p-value 0.0
+        # score(model, ldatax) # success ratio 57.0%, p-value 0.155
+
 
     ### RNN, layer 30
         model = RNN(7, [30], 1)
         ldata1 = shuffle(ldata0)
-        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e0, regc=1e-10, learning_rate=1e-3)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e0, regc=1e-10, learning_rate=3e-3)
         iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=2e-4)
-        iter(model, ldata1, nbepoch=1000, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
-        # 0.008, pas terrible
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
+        # 0.0195
+        score(model, ldata1) # success ratio 52.0%, p-value 0.182
+        score(model, ldatax) # success ratio 59.0%, p-value 0.108
         sol1 = deepcopy(model)
+
+    ### RNN, layer 5
+        model = RNN(7, [5], 1)
+        ldata1 = shuffle(ldata0)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e-1, regc=1e-10, learning_rate=1e-2)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=2e-4)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
+        # 0.0195
+        score(model, ldata1) # success ratio 52.0%, p-value 0.182
+        score(model, ldatax) # success ratio 59.0%, p-value 0.108
+        sol1 = deepcopy(model)
+
+    ### RNN, layer 7+3
+        model = RNN(7, [7,3], 1)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=1e-2)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=1e-3)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
+        # 0.0196
+        score(model, ldata1) # success ratio 52.0%, p-value 0.182
+        score(model, ldatax) # success ratio 59.0%, p-value 0.108
+        sol1 = deepcopy(model)
+
+    ### RNN, layer 5+5
+        model = RNN(7, [5,5], 1)
+        ldata1 = shuffle(ldata0)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=1e-2)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=1e-3)
+        iter(model, ldata1, nbepoch=500, freq=10000, clipval=1e2, regc=1e-10, learning_rate=5e-5)
+        # 0.0196
+        score(model, ldata1) # success ratio 52.0%, p-value 0.182
+        score(model, ldatax) # success ratio 59.0%, p-value 0.108
+        sol1 = deepcopy(model)
+
+
+        rnn(model, ldata0[1]...)
+        rnn(model, ldata0[2]...)
+        rnn(model, ldata0[3]...)
+        rnn(model, ldata0[1]...)
 
     ### RNN, layer 20, split calib / valid set
         model = RNN(8, [20], 1)
@@ -165,7 +258,7 @@ using DataFramesMeta
         ldata1, ldata2 = ldata[1:splitidx], ldata[splitidx+1:end]
         iter(model, ldata1, nbepoch=100, freq=1000, clipval=1e0, regc=1e-10, learning_rate=1e-3)
         iter(model, ldata1, nbepoch=500, freq=1000, clipval=1e1, regc=1e-10, learning_rate=2e-4)
-        iter(model, ldata1, nbepoch=1000, freq=1000, clipval=1e2, regc=1e-10, learning_rate=3e-5)
+        iter(model, ldata1, nbepoch=1000, freq=10000, clipval=1e1, regc=1e-10, learning_rate=1e-5)
         # 0.02 (prof=5)
         score(model, ldata1) # [-0.0,0.014] ([0.001,0.034])
         score(model, ldata2) # [-0.0,0.012] ([0.0,0.025])
@@ -245,115 +338,4 @@ using DataFramesMeta
     Bokeh.plot(Float64[1:length(ldata0);], res[:,[1, 5, 7]])
     Bokeh.showplot() 
 
-##########################################################################
-#    Fit <> backtest
-##########################################################################
 
-    ### RNN, layer 20, split calib / valid set
-        model = RNN(8, [20], 1)
-        splitidx = 200
-        ldata1 = shuffle(ldata0[1:splitidx])
-        iter(model, ldata1, nbepoch=100, freq=1000, clipval=1e0, regc=1e-10, learning_rate=1e-3)
-        iter(model, ldata1, nbepoch=500, freq=1000, clipval=1e1, regc=1e-10, learning_rate=2e-4)
-        iter(model, ldata1, nbepoch=1000, freq=1000, clipval=1e3, regc=1e-10, learning_rate=3e-5)
-        iter(model, ldata1, nbepoch=1000, freq=1000, clipval=1e3, regc=1e-10, learning_rate=1e-5)
-        # 0.019 (prof=5)
-        score(model, ldata1) # [-0.0,0.031] ([0.002,0.037])
-        score(model, ldata0) # [-0.002,0.031] ([0.001,0.032])
-        sol2 = deepcopy(model)
-
-    res = simul(strat1, sol2, ldata0, costrel=0.01, costabs=0.) #+49%
-    Bokeh.plot(Float64[1:length(ldata0);], res[:,[1, 5, 7]])
-    Bokeh.showplot() # +21%
-
-    # perf future, après splitidx
-        ldata2 = ldata0[splitidx+1:end]
-
-        res = simul(strat1, sol2, ldata2, costrel=0.01, costabs=0.) #+11%
-        Bokeh.plot(Float64[1:size(res,1);], res[:,[1, 5, 7]])
-        Bokeh.showplot() # +21%
-
-
-##### contrôles par rapport aux couts Coinbase
-    ### ventes
-    mc, mb, fx = 77.35, 0.3, 260.44
-    mc, mb, fx = 257.24, 1., 259.84
-
-    costrel, costabs = 0.01, 0.
-    mvta, current = -mb, fx
-    mvtc = -current*mvta*(1-costrel)-costabs
-
-    ### achats
-    mc, mb, fx = 10., 0.03805289, 260.17
-    mvtc, current = -mc, fx
-    (-mvtc-costabs)*(1-costrel)/current
-
-
-
-    ### random predictions
-        rnn(model::Float64, vars, res) = [ vars[3,end] + randn()*0.03, 0., 0.]
-        res = simul(strat1, 0., ldata0)
-        Bokeh.plot(Float64[1:length(ldata0);], res[:,[1, 5, 7]])
-        Bokeh.showplot()
-
-##########################################################################
-#   Out of sample
-##########################################################################
-    datapath = "P:/Documents/Julia/RNNpred/data/testing"
-
-    #####  lecture données  ###############
-        df0 = readtable(joinpath(datapath, "BAVERAGE-EUR.csv"), separator=',')
-        # df0 = @transform(df0, Date = Date(:Date)) ; nothing
-        df0 = df0[[:Date, :Ask, :Bid, :Last]]
-        # lasts = array(df0[:Last])
-        # μs = lasts[2:end] ./ lasts[1:end-1]
-        # fit_mle(LogNormal, μs)
-        # fit_mle(Normal, μs - 1.)
-        # fit_mle(Normal, μs )
-
-        println(nrow(df0))
-        for (fn, cn) in [("CURRFX-USDCNY.csv",  :Rate), 
-                   ("CURRFX-EURUSD.csv",  :Rate),
-                   ("BCHAIN-NTRAN.csv",  :Value),
-                   ("BCHAIN-TVTVR.csv", :Value)]
-            # fn = "BCHAIN-NTRAN.csv"
-            df = readtable(joinpath(datapath, fn), separator=',')
-            nfx = symbol(fn[1:end-4])
-            # df = @transform(df, Date = Date(:Date))
-            df[nfx] = df[cn]
-            df0 = join(df0, df[[:Date, nfx]], on=:Date, kind=:inner)
-            println(nrow(df0))
-        end
-
-        sort!(df0, cols=:Date)
-        head(df0)
-
-    #### Génération des séries historiques de longueur 'Span'
-        ldatax = Any[]
-
-        avars = convert(Array{Float64}, df0[:,2:end])' ./ vscale # scaling identique !
-        ares  = convert(Vector{Float64},df0[:Last]) / rscale     # scaling identique !
-        for i in 1:nrow(df0)-Span  # i = 21
-            vars = avars[:,i:i+Span-1]
-            res  = ares[i+Span]
-            push!(ldatax, (vars, res))
-        end
-
-        length(ldatax)
-        ldatax[1]
-        ldatax[21]
-        ldatax[22]
-        avars[:,20:end]
-    #### contrôle
-
-        for (i, (vars, res)) in enumerate(ldatax) # i, vars, res = 1, ldata0[8]...
-            pred = rnn(sol1, vars, res)[1] * rscale
-            vrai =                     res * rscale
-            current =          vars[3,end] * vscale[3]
-            print("$(lpad(i,4)) : ")
-            print("spot $(round(current,2)) prévu $(round(pred,2))")
-            print("  vrai $(round(vrai,2))   ")
-            println( sign(pred-current)==sign(vrai-current) ? "ok" : "erreur")
-        end
-
-    df0[20:end,:] 
