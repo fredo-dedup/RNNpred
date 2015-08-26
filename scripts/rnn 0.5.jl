@@ -88,7 +88,7 @@ datapath = "P:/Documents/Julia/RNNpred/data"
         ldatax, _ = mkdata(df1, 2, scales);
 
         ress = [ x[2] for x in ldata0]
-        mean( ress .< 0.5)  # à la baisse dans 52% des cas
+        mean( ress .< 0.5)  # à la baisse dans 53% des cas
         mean(ress)  # 0.5
         extrema(ress)  # 0.397-0.609
 
@@ -318,8 +318,8 @@ datapath = "P:/Documents/Julia/RNNpred/data"
 
     ### verifs
         ress = Float64[rnn(model, dat...)[j] for dat in ldata0, j in 1:3]
-        mean(ress[:,1] .>= 0.5) # 13% !!!
-        mean(ress[:,2] .>= 0.5) # 42%
+        mean(ress[:,1] .>= 0.5) # 38%
+        mean(ress[:,2] .>= 0.5) # 47%
 
         Bokeh.plot([1.:314;], ress[:,1:2]) ; Bokeh.showplot()
         Bokeh.plot(ress[:,2], ress[:,1], ".") ; Bokeh.showplot()
